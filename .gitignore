@@ -1,0 +1,24 @@
+# 凭据与隐私数据 —— 绝对不能提交
+.env
+token.json
+client_secret*.json
+credentials.json
+mail.db
+mail.db-wal
+mail.db-shm
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.tmp
