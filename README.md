@@ -43,6 +43,20 @@ python run_pipeline.py --limit 10 -v
 `.env.example` lists every supported variable. Paths default to the project root and can be
 overridden with `AIDE_DB_PATH`, `AIDE_TOKEN_PATH`, `AIDE_CREDENTIALS_PATH`, `AIDE_DATA_DIR`.
 
+### Google Cloud OAuth (one-time, per Google account)
+
+`client_secret*.json` is deliberately **not** in this repository — it belongs to whoever runs
+the tool. Each user creates their own:
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and create a project.
+2. **APIs & Services → Library** → enable **Gmail API**.
+3. **OAuth consent screen** → External → add your own address under **Test users**.
+4. **Credentials → Create credentials → OAuth client ID → Desktop app**, then download the JSON.
+5. Save it in the project root as `client_secret_*.json` (any file matching that pattern is
+   picked up automatically, or point `AIDE_CREDENTIALS_PATH` at it).
+
+Then run `python auth.py` and complete the browser flow.
+
 ## Setup window
 
 Double-click `setup.bat`, or run `python setup_gui.py`:
@@ -120,6 +134,15 @@ python -m unittest discover -s tests -v
 - `.env`, `token.json`, `client_secret*.json` and `mail.db` are git-ignored; nothing leaves the
   machine except the prompt sent to the model API.
 - The model sees sender, subject, date and up to 6000 characters of body text per message.
+
+## Known limitations
+
+- If the OAuth app stays in **Testing** mode, Google expires the refresh token after 7 days;
+  re-run `python auth.py` when that happens. Publishing the app avoids it.
+- `gmail.modify` is required to apply labels. For read-only analysis, switch the scope to
+  `gmail.readonly` and drop the labeling step.
+- This covers inbox triage only — no chatbot, vector search, calendar extraction or daily
+  digest yet.
 
 ## Roadmap
 

@@ -41,6 +41,20 @@ python run_pipeline.py --limit 10 -v
 所有路径默认相对项目根目录，可用 `AIDE_DB_PATH`、`AIDE_TOKEN_PATH`、
 `AIDE_CREDENTIALS_PATH`、`AIDE_DATA_DIR` 覆盖。
 
+### Google Cloud 授权（每人一次性）
+
+`client_secret*.json` 刻意**没有**放进仓库——它属于运行者自己的 Google Cloud 项目，
+每个使用者要自己建：
+
+1. 打开 [Google Cloud Console](https://console.cloud.google.com/) 新建项目；
+2. **APIs & Services → Library** → 启用 **Gmail API**；
+3. **OAuth consent screen** → External → 在 **Test users** 里加上自己的邮箱；
+4. **Credentials → Create credentials → OAuth client ID → Desktop app**，下载 JSON；
+5. 放到项目根目录，命名为 `client_secret_*.json`（自动识别，也可用
+   `AIDE_CREDENTIALS_PATH` 指定）。
+
+然后运行 `python auth.py` 完成浏览器授权。
+
 ## 初始配置窗口
 
 双击 `setup.bat`（或 `python setup_gui.py`）打开：
@@ -106,6 +120,14 @@ python -m unittest discover -s tests -v
 - `.env`、`token.json`、`client_secret*.json`、`mail.db` 均已 git-ignore；除发给模型 API 的
   内容外，数据不出本机。
 - 模型每次只看到发件人、主题、时间和最多 6000 字正文。
+
+## 已知限制
+
+- OAuth 应用若停留在 **Testing** 模式，Google 会在 7 天后让 refresh token 失效，需要重新
+  跑 `python auth.py`；把应用发布出去可以避免。
+- 打标签必须用 `gmail.modify`；只做只读分析的话可以把 scope 换成 `gmail.readonly`，并去掉
+  打标签那一步。
+- 目前只覆盖收件箱分级，chatbot、向量检索、日程抽取、午间报告都还没做。
 
 ## 后续
 
