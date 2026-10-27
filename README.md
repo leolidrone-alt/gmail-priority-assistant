@@ -1,90 +1,132 @@
-# 邮件优先级助手（AISC 1000A case project）
+# Mail Priority Assistant
 
-把 Gmail 收件箱按 P0–P4 五级自动分类并打标签，是 case proposal 里"五级文件夹 + 邮件代理"
-的最小可运行内核。
+**English** | [中文](README.zh-CN.md)
 
-数据流：
+A small agent that sorts a Gmail inbox into five priority levels (P0–P4) and labels each
+message in place. It is the "five folders + mail agent" kernel of an AISC 1000A case proposal:
+everything below is runnable, the chatbot / vector-search layers are still on the roadmap.
 
 ```
-Gmail API ──拉取/增量同步──> SQLite (mail.db) ──DeepSeek 判定──> Gmail 标签 (P0–P4)
-                                    │
-                                    └── 结构化字段，后续可接向量库 / chatbot / 日程
+Gmail API ──fetch / incremental sync──> SQLite (mail.db) ──DeepSeek──> Gmail labels (P0–P4)
+                                              │
+                                              └── structured rows, ready for a vector store,
+                                                  a chatbot, or calendar extraction
 ```
 
-## 快速开始
+## Priority levels
+
+| Label | Meaning | Examples |
+|---|---|---|
+| `P0-Action required` | Must act, usually with a deadline | add/drop, exam changes, tuition, visa, housing, ITSC alerts |
+| `P1-Major & career` | Relevant to major or career | CPEG/SENG/COMP notices, internships, co-op, research, competitions, tech talks |
+| `P2-Admin info` | Administrative, no action needed | library, system maintenance, policy reminders, weekly digests |
+| `P3-Events` | Enjoyable but not career-critical | arts, sports, volunteering, society recruitment, GE talks |
+| `P4-Noise` | Marketing or sensitive noise | credit cards, OTP codes, bank statements, unrelated vendors |
+
+Exactly one label per message — re-running is idempotent and never stacks labels.
+
+## Quick start
+
+Requires Python 3.11+.
 
 ```bash
-# 1. 依赖
 python -m venv .venv
-.venv\Scripts\activate          # Windows；Linux/macOS: source .venv/bin/activate
+.venv\Scripts\activate            # Windows; macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. 配置
-copy .env.example .env          # 填入 DEEPSEEK_API_KEY
+copy .env.example .env            # then fill in DEEPSEEK_API_KEY
+python auth.py                    # opens a browser, writes token.json
 
-# 3. 首次授权（会打开浏览器，生成 token.json）
-python auth.py
-
-# 4. 跑一轮
 python run_pipeline.py --limit 10 -v
 ```
 
-## 初始配置窗口
+`.env.example` lists every supported variable. Paths default to the project root and can be
+overridden with `AIDE_DB_PATH`, `AIDE_TOKEN_PATH`, `AIDE_CREDENTIALS_PATH`, `AIDE_DATA_DIR`.
 
-双击 `setup.bat`（或 `python setup_gui.py`）打开：
+## Setup window
 
-![配置窗口](docs/setup_window.png)
+Double-click `setup.bat`, or run `python setup_gui.py`:
 
-- 两栏都留空、直接回车 = 使用 `.env` 里现有的值（首次即默认邮箱和已配好的 key）。
-- 邮箱会做三层检查：① 格式（`@`、local-part、域名、长度、连续点等）；② 是否 Gmail 域名（非 Gmail 会二次确认）；③ 用已授权 token 调 `getProfile` 核对账号——一致给绿字确认，不一致弹窗，**本机没有 token 时明确提示「尚未完成 OAuth 授权」**，不会静默当作已验证。
-- API Key 检查 `sk-` 前缀、长度、有无空白；保存时只改 `.env` 里对应的两行，注释和其他配置原样保留。
+![Setup window](docs/setup_window.png)
 
-## 常用命令
+- Leave both fields blank and press Enter to keep the values already in `.env`.
+- The Gmail address gets three checks: format, Gmail domain (non-Gmail asks for confirmation),
+  and a `getProfile` call against the authorized token. If no usable token exists it says so
+  explicitly instead of silently passing.
+- The API key is checked for the `sk-` prefix, length and stray whitespace. Saving edits only
+  those two lines in `.env`; comments and other keys are preserved byte for byte.
 
-| 命令 | 作用 |
+## Commands
+
+| Command | What it does |
 |---|---|
-| `python run_pipeline.py` | 增量同步 + 分类待处理邮件 |
-| `python run_pipeline.py --limit 5 --dry-run` | 只分类、不打标签、不写库（调 rubric 用） |
-| `python run_pipeline.py --full` | 忽略 historyId，重扫 inbox |
-| `python run_pipeline.py --reset` | 清空分类结果后重新判定 |
-| `python run_pipeline.py --non-interactive` | cron / 无桌面环境（禁止弹浏览器） |
-| `python -m unittest discover -s tests -v` | 离线测试（不联网、不碰真账号） |
+| `python run_pipeline.py` | Incremental sync, then classify whatever is pending |
+| `python run_pipeline.py --limit 5 --dry-run` | Classify only — no labels, no DB writes (tune the rubric with this) |
+| `python run_pipeline.py --full` | Ignore `historyId` and rescan the inbox |
+| `python run_pipeline.py --reset` | Clear classifications and re-judge everything |
+| `python run_pipeline.py --non-interactive` | Never open a browser (cron / headless) |
+| `python -m unittest discover -s tests -v` | Offline test suite (no network, no real mailbox) |
 
-## 模块
+## How it works
 
-| 文件 | 职责 |
+**Fetch.** `gmail_reader.py` walks the MIME tree, prefers `text/plain`, converts `text/html`
+to text (scripts and styles dropped, links expanded), skips attachments, and decodes with
+`charset → utf-8 → gb18030` fallbacks. Messages are pulled with `batchGet` (N requests → 1)
+and, after the first run, with Gmail's `historyId` cursor.
+
+**Store.** `store.py` keeps a single `emails` table plus a `sync_state` key/value table.
+The schema self-migrates on startup (`ALTER TABLE` for missing columns), writes use `UPSERT`
+so a re-fetch refreshes metadata without clobbering a classification, and each failure bumps
+`error_count`; after three attempts a message is left alone.
+
+**Classify.** `classify.py` calls DeepSeek's Responses API with a strict tool schema and a
+rubric aimed at a first-year CPEG student. `tool_choice="required"` is attempted first and
+degraded to `auto` if the endpoint rejects it; if the model answers in prose anyway, the
+priority is recovered from the text. Authentication errors abort the run instead of burning
+through the whole batch.
+
+**Label.** `label.py` creates the five labels and applies them in a single `modify` call that
+adds the target and removes the other four, so the five folders stay mutually exclusive.
+
+## Layout
+
+| File | Responsibility |
 |---|---|
-| `config.py` | 路径、环境变量、常量；所有路径可用 `AIDE_*` 环境变量覆盖 |
-| `utils.py` | 日志、指数退避重试、文本清洗 |
-| `auth.py` | OAuth（`gmail.modify`：可读可打标签，不能发信/永久删除） |
-| `gmail_reader.py` | 解析正文（HTML→文本）、跳附件、批量拉取、historyId 增量同步 |
-| `store.py` | SQLite：旧库自动迁移、UPSERT、失败计数、同步状态 |
-| `classify.py` | DeepSeek 分类（工具调用 + 参数降级 + 文本兜底） |
-| `label.py` | P0–P4 标签，互斥打标签 |
-| `settings.py` | 邮箱/Key 校验、`.env` 原地更新、账号核对 |
-| `setup_gui.py` | Tkinter 初始配置窗口（`setup.bat` 启动） |
-| `run_pipeline.py` | 命令行入口 |
+| `config.py` | Paths, environment variables, constants |
+| `utils.py` | Logging, exponential-backoff retry, text cleaning |
+| `auth.py` | OAuth (`gmail.modify`: read + label, cannot send or delete) |
+| `gmail_reader.py` | MIME parsing, HTML→text, batch fetch, incremental sync |
+| `store.py` | SQLite schema/migration, UPSERT, retry accounting, sync state |
+| `classify.py` | DeepSeek call, tool-call parsing, rubric |
+| `label.py` | P0–P4 labels, exclusive application |
+| `settings.py` | Email/key validation, `.env` editing, account cross-check |
+| `setup_gui.py` | Tkinter setup window |
+| `run_pipeline.py` | CLI entry point |
 
-## 相对初版改了什么
+## Tests
 
-- **配置**：`D:\大学\助手` 硬编码全部移除，改用 `config.py` + `.env`；没有 `.env` 时给出可读报错，而不是在 `OpenAI()` 构造里抛异常。
-- **正文**：HTML 邮件转纯文本（跳过 `script/style`、展开链接），不再把 `<style>` 当正文喂模型。
-- **标签互斥**：一次 `modify` 同时加目标标签、摘掉其余四个，重跑幂等，不会一封邮件挂多个 P 标签。
-- **增量同步**：用 `historyId` 只取新邮件；过期时自动退化为全量扫描。
-- **批量拉取**：`batchGet` 把 N 次 HTTP 请求压成 1 次。
-- **幂等与可重入**：UPSERT 保留已有分类；失败累计 3 次后跳过；已分类但打标签失败的邮件下轮只补标签、不重复调模型。
-- **容错**：网络/限流错误指数退避；单封邮件异常不中断整批；`tool_choice="required"` 不被服务端接受时自动降级。
-- **安全**：`.env`、`token.json`、`client_secret*.json`、`mail.db` 已进 `.gitignore`。
+31 offline tests cover MIME parsing, HTML extraction, schema migration, UPSERT semantics,
+exclusive labelling, model-response parsing and fallbacks, and one end-to-end run of `main()`
+with a fake Gmail service and a fake model client.
 
-## 已知限制
-
-- OAuth 应用若处于 Testing 模式，refresh token 只有 7 天有效期；过期需重新 `python auth.py`。
-- `gmail.modify` 才能打标签；若只做只读分析，可把 scope 换成 `gmail.readonly`。
-- 尚未实现 proposal 里的 chatbot 前端、向量检索、日程抽取、午间报告——当前只覆盖"收件箱分级"这一层。
-
-## 目录
-
+```bash
+python -m unittest discover -s tests -v
 ```
-config.py  utils.py  auth.py  gmail_reader.py  store.py  classify.py  label.py
-run_pipeline.py  requirements.txt  .env.example  .gitignore  tests/
-```
+
+## Privacy
+
+- Only `gmail.modify` is requested: read mail and change labels, but never send or permanently
+  delete anything.
+- `.env`, `token.json`, `client_secret*.json` and `mail.db` are git-ignored; nothing leaves the
+  machine except the prompt sent to the model API.
+- The model sees sender, subject, date and up to 6000 characters of body text per message.
+
+## Roadmap
+
+The case proposal describes a larger system; this repository covers the inbox-triage layer.
+Still missing: chatbot front end, vector retrieval over mail history, schedule extraction
+against the UST timetable, a daily lunch-time digest, and the private-mailbox relay.
+
+## License
+
+[MIT](LICENSE)
